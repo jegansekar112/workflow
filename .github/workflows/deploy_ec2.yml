@@ -1,0 +1,51 @@
+name: "Reusable EC2 Deploy Workflow"
+
+on:
+  workflow_call:
+    inputs:
+      EC2_HOST:
+        required: true
+        type: string
+      EC2_USER:
+        default: ubuntu
+        type: string
+      APP_NAME:
+        required: true
+        type: string
+      DEPLOY_PATH:
+        required: true
+        type: string
+      BRANCH:
+        default: main
+        type: string
+    secrets:
+      SSH_PRIVATE_KEY:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.BRANCH }}
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ inputs.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy Files to EC2
+        run: |
+          rsync -avz --delete ./ ${{ inputs.EC2_USER }}@${{ inputs.EC2_HOST }}:${{ inputs.DEPLOY_PATH }}
+
+      - name: Restart Service on EC2
+        run: |
+          ssh ${{ inputs.EC2_USER }}@${{ inputs.EC2_HOST }} << 'EOF'
+            cd ${{ inputs.DEPLOY_PATH }}
+            echo "Restarting service..."
+            sudo systemctl restart ${{ inputs.APP_NAME }}
+          EOF
