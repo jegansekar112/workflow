@@ -1,51 +1,60 @@
-name: "Reusable EC2 Deploy Workflow"
+# .github/workflows/deploy-ec2.yml
+name: Deploy Backend to EC2
 
 on:
   workflow_call:
     inputs:
-      EC2_HOST:
+      repo_name:
+        description: "Repository name to deploy"
         required: true
         type: string
-      EC2_USER:
-        default: ubuntu
-        type: string
-      APP_NAME:
+      host:
+        description: "EC2 public IP or hostname"
         required: true
         type: string
-      DEPLOY_PATH:
-        required: true
-        type: string
-      BRANCH:
-        default: main
+      port:
+        description: "Port to expose from container"
+        required: false
+        default: "5000"
         type: string
     secrets:
-      SSH_PRIVATE_KEY:
+      EC2_SSH_KEY:
+        description: "Private SSH key for EC2 access"
         required: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v0.1.7
         with:
-          ref: ${{ inputs.BRANCH }}
+          host: ${{ inputs.host }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
 
-      - name: Setup SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ inputs.EC2_HOST }} >> ~/.ssh/known_hosts
+            # Install git and docker if not already installed
+            sudo yum update -y
+            sudo yum install -y git docker
 
-      - name: Copy Files to EC2
-        run: |
-          rsync -avz --delete ./ ${{ inputs.EC2_USER }}@${{ inputs.EC2_HOST }}:${{ inputs.DEPLOY_PATH }}
+            # start docker service
+            sudo service docker start
 
-      - name: Restart Service on EC2
-        run: |
-          ssh ${{ inputs.EC2_USER }}@${{ inputs.EC2_HOST }} << 'EOF'
-            cd ${{ inputs.DEPLOY_PATH }}
-            echo "Restarting service..."
-            sudo systemctl restart ${{ inputs.APP_NAME }}
-          EOF
+            # allow ec2-user to run docker without sudo
+            sudo usermod -aG docker ec2-user || true
+
+            # pull or clone repo
+            REPO_NAME="${{ inputs.repo_name }}"
+            if [ ! -d "$REPO_NAME" ]; then
+                git clone https://github.com/jegansekar112/${REPO_NAME}.git $REPO_NAME
+            fi
+            cd $REPO_NAME
+            git pull origin main
+
+            # build and run docker
+            docker build -t $REPO_NAME .
+            docker stop $REPO_NAME || true
+            docker rm $REPO_NAME || true
+            docker run -d --name $REPO_NAME -p ${{ inputs.port }}:${{ inputs.port }} $REPO_NAME
